@@ -389,7 +389,8 @@ with tab_comp:
 with tab_tech:
     st.header("🛠️ Tech-Stack")
 
-    def bar_if_exists(col: str, label: str):
+# ── helper sûr pour bar-charts Tech ────────────────────────────
+def bar_if_exists(col: str, label: str):
     """Affiche un bar-chart Plotly si la colonne existe et contient des valeurs."""
     if col not in df or df[col].dropna().empty:
         st.info(f"Aucune donnée « {label} » après filtres.")
@@ -413,6 +414,7 @@ with tab_tech:
         height=400,
     )
     st.plotly_chart(fig, use_container_width=True)
+
 
     bar_if_exists("techno", "Technologie")
     bar_if_exists("vendor", "Vendor")
