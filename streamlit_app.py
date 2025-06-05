@@ -192,23 +192,41 @@ with tab_comp:
     if "synch_mode" in df and df["synch_mode"].notna().any():
         st.plotly_chart(px.pie(df,names="synch_mode",hole=.45),use_container_width=True)
 
-# 8. Tech-Stack  (⚠️ garde anti-tableau vide)
+# ═════ 8. Tech-Stack
 with tab_tech:
     st.header("🛠️ Tech-Stack")
-    if "techno" in df and df["techno"].notna().any():
-        tech=df["techno"].value_counts().reset_index(name="count")
-        if not tech.empty:
-            st.plotly_chart(px.bar(tech,x="index",y="count",
-                                   labels={"index":"Technologie","count":"Robots"}),
-                            use_container_width=True)
-    else: st.info("Colonne 'techno' absente ou vide.")
 
+    # ----- TECHNO -----
+    if "techno" in df and df["techno"].notna().any():
+        tech = (df["techno"]
+                  .value_counts()
+                  .reset_index(drop=False)
+                  .rename(columns={"index": "Technologie", "techno": "Robots"}))
+        if not tech.empty:
+            st.plotly_chart(
+                px.bar(tech, x="Technologie", y="Robots",
+                       title="Nombre de robots par technologie"),
+                use_container_width=True)
+        else:
+            st.info("Aucune donnée technologie après filtres.")
+    else:
+        st.info("Colonne 'techno' absente ou vide.")
+
+    # ----- VENDOR -----
     if "vendor" in df and df["vendor"].notna().any():
-        vend=df["vendor"].value_counts().reset_index(name="count")
+        vend = (df["vendor"]
+                  .value_counts()
+                  .reset_index(drop=False)
+                  .rename(columns={"index": "Vendor", "vendor": "Robots"}))
         if not vend.empty:
-            st.plotly_chart(px.bar(vend,x="index",y="count",
-                                   labels={"index":"Vendor","count":"Robots"}),
-                            use_container_width=True)
+            st.plotly_chart(
+                px.bar(vend, x="Vendor", y="Robots",
+                       title="Nombre de robots par vendor"),
+                use_container_width=True)
+        else:
+            st.info("Aucune donnée vendor après filtres.")
+    else:
+        st.info("Colonne 'vendor' absente ou vide.")
 
 # 9. Données
 with tab_data:
