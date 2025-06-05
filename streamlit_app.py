@@ -1,22 +1,25 @@
 # streamlit_app.py
 """
-Streamlit app – Analyse interactive du catalogue RPA Generali.
-Inclut :
-  • upload CSV robuste (détection séparateur)  
-  • nettoyage (en‑têtes multiples, typage, NA)  
-  • KPIs + visualisations (histogramme, heatmap corrélation, top volumétrie, répartition catégorielle)  
-  • export du CSV nettoyé
+Streamlit – Tableau de bord RPA Generali
+=======================================
+Fonctions principales :
+• Upload CSV robuste (séparateur détecté)
+• Nettoyage + typage automatique
+• Filtres interactifs (zone fonctionnelle, plage volumétrie, % réussite)
+• Indicateurs clés dynamiques
+• Visualisations : histogrammes, box‑plots, heatmap corrélations, nuage de points, top‑N
+• Insight tables : agrégation par zone, détection des outliers
+• Export CSV nettoyé + CSV filtré
 
-Auteur : Samir El Hassani – Avanade · 2025‑06‑05
+Samir El Hassani – Avanade · 2025‑06‑05
 """
-
 from __future__ import annotations
 
 import csv
 import io
 import re
 import unicodedata
-from typing import List
+from typing import List, Tuple
 
 import altair as alt
 import numpy as np
@@ -24,19 +27,22 @@ import pandas as pd
 import streamlit as st
 
 ###############################################################################
-# CONFIGURATION GLOBALE
+# CONFIG & THEME
 ###############################################################################
 
-author = "Samir El Hassani"
-repo_url = "https://github.com/samirelhassani1998/Avanade"
+AUTHOR = "Samir El Hassani"
+REPO_URL = "https://github.com/samirelhassani1998/Avanade"
 
-st.set_page_config(page_title="Inventaire RPA Generali", page_icon="🤖", layout="wide")
+st.set_page_config(
+    page_title="Inventaire RPA Generali", page_icon="🤖", layout="wide"
+)
 
 ###############################################################################
-# FONCTIONS UTILITAIRES
+# HELPERS
 ###############################################################################
 
 def slugify(text: str) -> str:
+    """ASCII‑fication + snake_case."""
     text = (
         unicodedata.normalize("NFKD", str(text))
         .encode("ascii", "ignore")
@@ -45,147 +51,214 @@ def slugify(text: str) -> str:
         .strip()
     )
     text = re.sub(r"[^0-9a-z]+", "_", text)
-    text = re.sub(r"_{2,}", "_", text).strip("_")
-    return text
+    return re.sub(r"_{2,}", "_", text).strip("_")
 
 
-def read_csv_robust(upload) -> pd.DataFrame:
-    """Lecture avec détection automatique du séparateur (, ; ou tab)."""
-    raw = upload.read()
+def sniff_sep(raw: bytes) -> str:
     sample = raw[:2048].decode("utf-8", errors="replace")
     try:
         dialect = csv.Sniffer().sniff(sample, delimiters=[",", ";", "\t"])
-        sep = dialect.delimiter
+        return dialect.delimiter
     except csv.Error:
-        sep = ","
+        return ","
+
+
+def read_csv_robust(upload) -> pd.DataFrame:
+    raw = upload.read()
+    sep = sniff_sep(raw)
     upload.seek(0)
     return pd.read_csv(io.BytesIO(raw), sep=sep, dtype=str, keep_default_na=False)
 
 
-def fix_multirow_header(df: pd.DataFrame) -> pd.DataFrame:
+def promote_first_row_header(df: pd.DataFrame) -> pd.DataFrame:
     if any(c.lower().startswith("unnamed") or c == "" for c in df.columns):
-        if df.shape[0] > 0:
-            new_cols = df.iloc[0].tolist()
-            if len(set(new_cols)) == len(new_cols):
-                df = df.iloc[1:].reset_index(drop=True)
-                df.columns = new_cols
-    return df
+        if df.shape[0] > 0 and df.iloc[0].nunique() == df.shape[1]:
+            df.columns = df.iloc[0]
+            df = df.iloc[1:]
+    return df.reset_index(drop=True)
 
 
-def to_numeric(series: pd.Series, percent: bool = False) -> pd.Series:
+def to_numeric(series: pd.Series, is_pct: bool = False) -> pd.Series:
     s = (
         series.astype(str)
         .str.replace("%", "", regex=False)
+        .str.replace("\u00a0", "", regex=False)  # nbsp
         .str.replace(",", "", regex=False)
         .str.replace(" ", "", regex=False)
     )
     num = pd.to_numeric(s, errors="coerce")
-    return num / 100 if percent else num
+    return num / 100 if is_pct else num
 
 
-def clean_dataframe(df_raw: pd.DataFrame) -> pd.DataFrame:
-    df = fix_multirow_header(df_raw)
-    df = df.dropna(how="all").copy()
+def clean_df(df_raw: pd.DataFrame) -> pd.DataFrame:
+    df = promote_first_row_header(df_raw).copy()
+    df = df.dropna(how="all")
     df.columns = [slugify(c) if c else f"col_{i}" for i, c in enumerate(df.columns)]
 
-    mapping = {"volumetrie_an": False, "gains_etp": False, "reussite": True}
-    for col, is_pct in mapping.items():
+    conversions = {
+        "volumetrie_an": False,
+        "gains_etp": False,
+        "reussite": True,
+    }
+    for col, pct in conversions.items():
         if col in df.columns:
-            df[col] = to_numeric(df[col], percent=is_pct)
+            df[col] = to_numeric(df[col], pct)
 
+    # types finaux
     return df
 
 
+###############################################################################
+# CACHE FUNCTIONS
+###############################################################################
+
 @st.cache_data(show_spinner=False)
-def profile_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Profil statistique sécurisé (évite TypeError sur .round)."""
+def get_profile(df: pd.DataFrame) -> pd.DataFrame:
     try:
         desc = df.describe(include="all", datetime_is_numeric=True)
     except TypeError:
         desc = df.describe(include="all")
-
     prof = (
         desc.T
         .assign(dtype=df.dtypes.astype(str))
         .reset_index()
         .rename(columns={"index": "column"})
     )
-
-    total = float(len(df))
+    total = len(df)
     prof["count"] = pd.to_numeric(prof["count"], errors="coerce").fillna(0)
-    prof["missing"] = (total - prof["count"]).astype(float)
-    prof["missing_pct"] = ((prof["missing"] / total) * 100).astype(float).round(1)
-
+    prof["missing"] = total - prof["count"]
+    prof["missing_pct"] = (prof["missing"] / total * 100).round(1)
     return prof
 
+
 ###############################################################################
-# BARRE LATÉRALE
+# SIDEBAR – UPLOAD & FILTERS
 ###############################################################################
 
-st.sidebar.header("📂 Import CSV")
-uploader = st.sidebar.file_uploader("Glissez votre fichier exporté (UTF-8)", type=["csv"])
+st.sidebar.header("📂 Charger le CSV")
+file = st.sidebar.file_uploader("Déposez le fichier exporté", type=["csv"])
 
-if not uploader:
-    st.sidebar.info("L'app reste inactive tant qu'aucun fichier n'est fourni.")
+if not file:
+    st.sidebar.info("Importez un fichier pour commencer.")
     st.stop()
 
-###############################################################################
-# CHARGEMENT & NETTOYAGE
-###############################################################################
+# chargement + nettoyage
+raw = read_csv_robust(file)
+base_df = clean_df(raw)
 
-raw_df = read_csv_robust(uploader)
-df = clean_dataframe(raw_df)
+# filtres interactifs
+zones = base_df["zone_fonctionnelle"].dropna().unique().tolist() if "zone_fonctionnelle" in base_df.columns else []
+sel_zones = st.sidebar.multiselect("Zone fonctionnelle", options=zones, default=zones)
 
-st.success(f"{df.shape[0]:,} lignes × {df.shape[1]} colonnes après nettoyage.")
+vol_min, vol_max = (base_df["volumetrie_an"].min(skipna=True), base_df["volumetrie_an"].max(skipna=True)) if "volumetrie_an" in base_df.columns else (0, 0)
+if pd.notna(vol_min):
+    v_range = st.sidebar.slider("Plage volumétrie/an", float(vol_min), float(vol_max), (float(vol_min), float(vol_max)))
+else:
+    v_range = (None, None)
 
-###############################################################################
-# KPIs
-###############################################################################
-
-kpi_cols = st.columns(4)
-with kpi_cols[0]:
-    st.metric("Robots recensés", f"{df.shape[0]:,}")
-if "volumetrie_an" in df.columns:
-    with kpi_cols[1]:
-        st.metric("Volumétrie annuelle", f"{df['volumetrie_an'].sum():,.0f}")
-if "reussite" in df.columns:
-    with kpi_cols[2]:
-        st.metric("% réussite moyen", f"{df['reussite'].mean()*100:,.1f}%")
-if "gains_etp" in df.columns:
-    with kpi_cols[3]:
-        st.metric("Gains ETP", f"{df['gains_etp'].sum():,.1f}")
+# appliquer filtres
+filt_df = base_df.copy()
+if sel_zones:
+    filt_df = filt_df[filt_df["zone_fonctionnelle"].isin(sel_zones) | filt_df["zone_fonctionnelle"].isna()]
+if v_range[0] is not None and "volumetrie_an" in filt_df.columns:
+    filt_df = filt_df[(filt_df["volumetrie_an"] >= v_range[0]) & (filt_df["volumetrie_an"] <= v_range[1])]
 
 ###############################################################################
-# PROFIL
+# KPI SECTION
 ###############################################################################
 
-with st.expander("📑 Profil statistique", expanded=True):
-    st.dataframe(profile_dataframe(df), use_container_width=True)
+st.title("🤖 Inventaire RPA Generali – Dashboard interactif")
+
+kpi = st.columns(5)
+with kpi[0]:
+    st.metric("Robots (filtrés)", f"{filt_df.shape[0]:,}")
+if "volumetrie_an" in filt_df.columns:
+    with kpi[1]:
+        st.metric("Volumétrie totale", f"{filt_df['volumetrie_an'].sum():,.0f}")
+if "reussite" in filt_df.columns:
+    with kpi[2]:
+        st.metric("% Réussite médiane", f"{filt_df['reussite'].median()*100:,.1f}%")
+    with kpi[3]:
+        st.metric("% Réussite < 60%", f"{(filt_df['reussite']<0.60).sum()}")
+if "gains_etp" in filt_df.columns:
+    with kpi[4]:
+        st.metric("Gains ETP cumulés", f"{filt_df['gains_etp'].sum():,.1f}")
 
 ###############################################################################
-# VISUALISATIONS
+# TABS LAYOUT
 ###############################################################################
 
-numeric_cols: List[str] = df.select_dtypes(include=[np.number]).columns.tolist()
-cat_cols: List[str] = [c for c in df.columns if df[c].nunique() <= 30 and c not in numeric_cols]
+overview, dist_tab, rela_tab, data_tab = st.tabs(["Vue d'ensemble", "Distributions", "Relations", "Données"])
 
-with st.expander("📊 Histogramme numérique"):
-    if numeric_cols:
-        num_var = st.selectbox("Variable", numeric_cols, key="hist")
-        st.altair_chart(
-            alt.Chart(df).mark_bar().encode(
-                x=alt.X(num_var, bin=alt.Bin(maxbins=50)),
-                y="count()",
-                tooltip=["count()"],
-            ).properties(height=300),
-            use_container_width=True,
+###############################################################################
+# OVERVIEW TAB
+###############################################################################
+
+with overview:
+    st.subheader("Top 15 volumétrie annuelle")
+    if {"nom", "volumetrie_an"}.issubset(filt_df.columns):
+        top = filt_df.nlargest(15, "volumetrie_an")[["nom", "volumetrie_an", "reussite", "gains_etp"]]
+        st.dataframe(top, hide_index=True)
+
+    st.subheader("Agrégation par zone fonctionnelle")
+    if "zone_fonctionnelle" in filt_df.columns and "volumetrie_an" in filt_df.columns:
+        agg = (
+            filt_df.groupby("zone_fonctionnelle")
+            .agg(
+                robots=("identification", "count") if "identification" in filt_df.columns else ("nom", "count"),
+                volumetrie_total=("volumetrie_an", "sum"),
+                succes_moyen=("reussite", "mean") if "reussite" in filt_df.columns else ("volumetrie_an", "size"),
+            )
+            .sort_values("volumetrie_total", ascending=False)
         )
-    else:
-        st.info("Aucune variable numérique détectée.")
+        st.dataframe(agg, use_container_width=True)
 
-with st.expander("🔗 Heatmap corrélation"):
-    if len(numeric_cols) >= 2:
-        corr = df[numeric_cols].corr().stack().reset_index()
+###############################################################################
+# DISTRIBUTIONS TAB
+###############################################################################
+
+with dist_tab:
+    st.subheader("Histogrammes & Box‑plots")
+    if numeric_cols := filt_df.select_dtypes(include=[np.number]).columns.tolist():
+        num = st.selectbox("Variable numérique", numeric_cols, key="dist_num")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.altair_chart(
+                alt.Chart(filt_df).mark_bar().encode(
+                    x=alt.X(num, bin=alt.Bin(maxbins=60)),
+                    y="count()",
+                ),
+                use_container_width=True,
+            )
+        with col2:
+            st.altair_chart(
+                alt.Chart(filt_df).mark_boxplot(extent="min-max").encode(y=num),
+                use_container_width=True,
+            )
+    else:
+        st.info("Aucune colonne numérique disponible.")
+
+###############################################################################
+# RELATIONS TAB
+###############################################################################
+
+with rela_tab:
+    st.subheader("Nuage de points Volumetrie vs % Réussite")
+    if {"volumetrie_an", "reussite"}.issubset(filt_df.columns):
+        scatter = alt.Chart(filt_df).mark_circle(size=60, opacity=0.7).encode(
+            x="volumetrie_an",
+            y=alt.Y("reussite", axis=alt.Axis(format=".0%")),
+            color="zone_fonctionnelle" if "zone_fonctionnelle" in filt_df.columns else alt.value("steelblue"),
+            tooltip=list(filt_df.columns),
+        ).interactive()
+        st.altair_chart(scatter, use_container_width=True)
+    else:
+        st.info("Variables nécessaires manquantes.")
+
+    st.subheader("Heatmap des corrélations")
+    num_cols = filt_df.select_dtypes(include=[np.number]).columns.tolist()
+    if len(num_cols) >= 2:
+        corr = filt_df[num_cols].corr().stack().reset_index()
         corr.columns = ["x", "y", "corr"]
         st.altair_chart(
             alt.Chart(corr).mark_rect().encode(
@@ -193,54 +266,31 @@ with st.expander("🔗 Heatmap corrélation"):
                 y="y:O",
                 color=alt.Color("corr:Q", scale=alt.Scale(scheme="viridis")),
                 tooltip=[alt.Tooltip("corr:Q", format=".2f")],
-            ).properties(height=400),
+            ),
             use_container_width=True,
         )
     else:
-        st.info("Pas assez de variables numériques.")
-
-with st.expander("🏅 Top 10 volumétrie"):
-    if {"volumetrie_an", "nom"}.issubset(df.columns):
-        top10 = df.sort_values("volumetrie_an", ascending=False).head(10)
-        st.altair_chart(
-            alt.Chart(top10).mark_bar().encode(
-                y=alt.Y("nom", sort="-x"),
-                x="volumetrie_an:Q",
-                tooltip=["volumetrie_an"],
-            ).properties(height=400),
-            use_container_width=True,
-        )
-    else:
-        st.info("Colonnes manquantes pour le top.")
-
-with st.expander("📂 Répartition catégorielle"):
-    if cat_cols:
-        cat_var = st.selectbox("Catégorie", cat_cols, key="cat")
-        st.altair_chart(
-            alt.Chart(df).mark_bar().encode(
-                y=alt.Y(cat_var, sort="-x"),
-                x="count()",
-                tooltip=["count()"],
-            ).properties(height=400),
-            use_container_width=True,
-        )
-    else:
-        st.info("Aucune variable catégorielle <=30 modalités.")
+        st.info("Pas assez de variables pour la corrélation.")
 
 ###############################################################################
-# EXPORT
+# DATA TAB
 ###############################################################################
 
-@st.cache_data
-def get_csv_bytes(d: pd.DataFrame) -> bytes:
-    return d.to_csv(index=False).encode("utf-8")
+with data_tab:
+    st.subheader("Profil statistique complet")
+    st.dataframe(get_profile(filt_df), use_container_width=True)
 
-st.download_button("💾 Télécharger CSV nettoyé", get_csv_bytes(df), "robots_clean.csv", "text/csv")
+    st.subheader("Jeu de données filtré")
+    st.dataframe(filt_df, use_container_width=True)
+
+    # téléchargement
+    csv_bytes = filt_df.to_csv(index=False).encode("utf-8")
+    st.download_button("💾 Télécharger CSV filtré", csv_bytes, "robots_filtered.csv", "text/csv")
 
 ###############################################################################
 # FOOTER
 ###############################################################################
 
 st.caption(
-    f"Réalisé par {author} · [Code]({repo_url}/blob/main/streamlit_app.py) · © 2025 Generali / Avanade"
+    f"Créé par {AUTHOR} – [Code]({REPO_URL}/blob/main/streamlit_app.py) – © 2025 Generali / Avanade"
 )
