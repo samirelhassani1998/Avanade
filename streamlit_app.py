@@ -2,9 +2,9 @@
 """
 Streamlit app for analysing Generali RPA robot inventory.
 Upload a CSV exported from the master sheet (any future version).
-The app cleans the data, infers column types, and offers interactive EDA.
-Author: Samir <your-GitHub-username>
-Created: 2025-06-05
+If aucun fichier n'est uploadé, l'app affiche simplement l'interface d'accueil.
+
+Samir – Avanade (2025‑06‑05)
 """
 
 from __future__ import annotations
@@ -12,196 +12,219 @@ from __future__ import annotations
 import io
 import re
 import unicodedata
-from typing import Any, Dict
+from pathlib import Path
+from typing import List, Tuple
 
 import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
+###############################################################################
+# CONFIGURATION
+###############################################################################
+
+author = "Samir El Hassani"
+repository_url = "https://github.com/samirelhassani1998/Avanade"
+
+st.set_page_config(
+    page_title="Generali RPA inventory", page_icon="🤖", layout="wide"
+)
+
+###############################################################################
+# HELPERS
+###############################################################################
 
 def slugify(text: str) -> str:
-    """Normalize column names: lowercase, ASCII, replace non-alphanum by underscore."""
     text = (
         unicodedata.normalize("NFKD", text)
         .encode("ascii", "ignore")
         .decode("ascii")
-        .strip()
         .lower()
+        .strip()
     )
-    text = re.sub(r"[^A-Za-z0-9_]+", "_", text)
-    text = re.sub(r"__+", "_", text).strip("_")
+    text = re.sub(r"[^0-9a-z_]+", "_", text)
+    text = re.sub(r"_{2,}", "_", text).strip("_")
     return text
 
 
-def detect_and_fix_header(df: pd.DataFrame) -> pd.DataFrame:
-    """If first row duplicates column names, drop it (typical Generali export quirk)."""
-    if df.shape[0] > 0 and (df.iloc[0].fillna("") == df.columns.to_series().fillna("")).all():
-        df = df.iloc[1:].reset_index(drop=True)
+def detect_header_duplication(df: pd.DataFrame) -> pd.DataFrame:
+    """If first row equals current column names, drop this first row."""
+    if df.empty:
+        return df
+    col_equal = (df.iloc[0].astype(str).str.strip() == df.columns.astype(str).str.strip()).all()
+    return df.iloc[1:].reset_index(drop=True) if col_equal else df
+
+
+def to_numeric(series: pd.Series, percent: bool = False) -> pd.Series:
+    if series.dtype.kind in "biufc":
+        return series
+    s = series.astype(str).str.replace("%", "", regex=False).str.replace(",", "", regex=False)
+    out = pd.to_numeric(s, errors="coerce")
+    return out / 100 if percent else out
+
+
+def clean_dataframe(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Apply rules specific to Generali RPA inventory."""
+    df = detect_header_duplication(df_raw)
+    df = df.dropna(how="all")
+
+    # Normalise column names once
+    df.columns = [slugify(c) for c in df.columns]
+
+    # Typed columns of interest – optional if not present
+    mappings = {
+        "volumetrie_an": dict(percent=False),
+        "gains_etp": dict(percent=False),
+        "reussite": dict(percent=True),  # ex: "71%"
+    }
+    for col, opts in mappings.items():
+        if col in df.columns:
+            df[col] = to_numeric(df[col], percent=opts["percent"])
+
     return df
 
 
-def clean_generali_robot_df(raw: pd.DataFrame) -> pd.DataFrame:
-    """Apply Generali-specific cleaning & typing rules."""
-    raw = detect_and_fix_header(raw)
-
-    # remove fully empty rows
-    raw = raw.dropna(how="all").copy()
-
-    # normalise column names
-    raw.columns = [slugify(c) for c in raw.columns]
-
-    # type coercion for known numeric fields, if present
-    def to_float(series: pd.Series, percent: bool = False) -> pd.Series:
-        cleaned = series.str.replace(",", "", regex=False).str.replace("%", "", regex=False)
-        numeric = pd.to_numeric(cleaned, errors="coerce")
-        if percent:
-            numeric /= 100.0
-        return numeric
-
-    numeric_map = {
-        "volumetrie_an": dict(percent=False),
-        "reussite": dict(percent=True),
-        "gains_etp": dict(percent=False),
-    }
-    for col, opts in numeric_map.items():
-        if col in raw.columns:
-            raw[col] = to_float(raw[col].astype(str), percent=opts["percent"])
-
-    return raw
-
-
 @st.cache_data(show_spinner=False)
-def analyse_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a profile summary DataFrame (count, unique, missing etc.)."""
-    summary = (
+def profile_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    out = (
         df.describe(include="all", datetime_is_numeric=True)
         .T
-        .assign(
-            missing=lambda d: df.shape[0] - d["count"],
-            missing_pct=lambda d: 100 * (df.shape[0] - d["count"]) / df.shape[0],
-            dtype=df.dtypes.astype(str),
-        )
+        .assign(dtype=df.dtypes.astype(str))
         .reset_index()
         .rename(columns={"index": "column"})
     )
-    return summary
+    total_rows = len(df)
+    out["missing"] = total_rows - out["count"]
+    out["missing_pct"] = 100 * out["missing"] / total_rows
+    return out
 
 
-# ---------------------------------------------------------------------------
-# Streamlit UI
-# ---------------------------------------------------------------------------
+###############################################################################
+# SIDEBAR
+###############################################################################
 
-st.set_page_config(page_title="Generali robots analyser", layout="wide")
+st.sidebar.header("📂 Charger un CSV")
+upload_file = st.sidebar.file_uploader("Déposez le fichier exporté (CSV)", type=["csv"])
 
-st.title("📊 Generali RPA robots – Analyse exploratoire interactive")
-st.write(
-    "Uploadez la dernière exportation CSV de l'inventaire des robots. "
-    "Le script se charge automatiquement du nettoyage minimal et propose "
-    "plusieurs visualisations et indicateurs clés."
+if upload_file is None:
+    st.sidebar.info("L'app reste vide tant qu'aucun fichier n'est chargé.")
+else:
+    st.sidebar.success("Fichier prêt à être analysé ✅")
+
+###############################################################################
+# MAIN PAGE
+###############################################################################
+
+st.title("🤖 Inventaire RPA Generali – Analyse interactive")
+
+st.markdown(
+    "Cette application vous permet de charger l'export CSV du catalogue de robots, "
+    "d'obtenir un nettoyage de base et d'explorer rapidement le jeu de données.\n"
+    "Les visualisations se mettent à jour automatiquement si la structure évolue."
 )
 
-uploaded = st.sidebar.file_uploader("Déposez un fichier CSV", type="csv")
-
-if uploaded is None:
-    st.info("➡️ Chargez un fichier CSV via le menu latéral pour démarrer.")
+if upload_file is None:
+    st.info("\n**➡️ Pour commencer :** importez un fichier CSV via la barre latérale.\n")
     st.stop()
 
-# charge & nettoie
-try:
-    raw_text = uploaded.getvalue().decode("utf-8")  # sécurité pour différents encodages
-except UnicodeDecodeError:
-    raw_text = uploaded.getvalue().decode("latin-1")
+###########################
+# 01 — Chargement / nettoyage
+###########################
 
-raw_df = pd.read_csv(io.StringIO(raw_text), dtype=str, skip_blank_lines=True)
-clean_df = clean_generali_robot_df(raw_df)
+raw_text = upload_file.getvalue().decode("utf-8", errors="replace")
+df_raw = pd.read_csv(io.StringIO(raw_text), dtype=str)
 
-st.success(f"✅ Données chargées : {clean_df.shape[0]:,} lignes × {clean_df.shape[1]} colonnes")
+df = clean_dataframe(df_raw)
 
-# -- options d'affichage -----------------------------------------------------
-if st.sidebar.checkbox("Afficher les données brutes", value=False):
-    st.subheader("Jeu de données (nettoyé)")
-    st.dataframe(clean_df, use_container_width=True)
+st.success(f"{df.shape[0]:,} lignes × {df.shape[1]} colonnes après nettoyage.")
 
-# -- résumé -----------------------------------------------------------------
-st.header("⚙️ Profil des colonnes")
-summary_df = analyse_df(clean_df)
-st.dataframe(summary_df, use_container_width=True)
+###########################
+# 02 — Profil des données
+###########################
 
-# -- analyses interactives ---------------------------------------------------
+st.subheader("📑 Profil statistique")
+profile = profile_dataframe(df)
+st.dataframe(profile, use_container_width=True)
 
-st.header("📈 Visualisations rapides")
+###########################
+# 03 — Visualisations interactives
+###########################
 
-numeric_cols = clean_df.select_dtypes(include=[np.number]).columns.tolist()
-cat_cols = [c for c in clean_df.columns if clean_df[c].dtype == "object" and clean_df[c].nunique() < 30]
+numeric_cols: List[str] = df.select_dtypes(include=[np.number]).columns.tolist()
+cat_cols: List[str] = [c for c in df.columns if df[c].nunique() < 30 and c not in numeric_cols]
 
-col1, col2 = st.columns(2)
-
-with col1:
+with st.expander("Histogrammes des variables numériques"):
     if numeric_cols:
-        chosen_num = st.selectbox("Variable numérique", numeric_cols, key="num")
-        hist = (
-            alt.Chart(clean_df)
+        col_choice = st.selectbox("Choisir une variable numérique", numeric_cols)
+        chart = (
+            alt.Chart(df)
             .mark_bar()
             .encode(
-                x=alt.X(chosen_num, bin=alt.Bin(maxbins=40), title=chosen_num),
-                y=alt.Y("count()", title="Effectif"),
+                x=alt.X(col_choice, bin=alt.Bin(maxbins=40)),
+                y="count()",
                 tooltip=["count()"],
             )
             .properties(height=300)
         )
-        st.altair_chart(hist, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
     else:
-        st.info("Aucune variable numérique trouvée.")
+        st.info("Aucune colonne numérique détectée.")
 
-with col2:
+with st.expander("⚖️ Corrélations (Pearson)"):
     if len(numeric_cols) >= 2:
-        corr = clean_df[numeric_cols].corr().stack().reset_index()
-        corr.columns = ["var1", "var2", "corr"]
-        heatmap = (
+        corr = df[numeric_cols].corr().stack().reset_index()
+        corr.columns = ["x", "y", "corr"]
+        heat = (
             alt.Chart(corr)
             .mark_rect()
             .encode(
-                x="var1:O",
-                y="var2:O",
+                x="x:O",
+                y="y:O",
                 color=alt.Color("corr:Q", scale=alt.Scale(scheme="viridis")),
-                tooltip=["var1", "var2", alt.Tooltip("corr:Q", format=".2f")],
+                tooltip=[alt.Tooltip("corr:Q", format=".2f")],
             )
-            .properties(height=300)
+            .properties(height=400)
         )
-        st.altair_chart(heatmap, use_container_width=True)
+        st.altair_chart(heat, use_container_width=True)
     else:
-        st.info("Pas assez de variables numériques pour afficher la matrice de corrélation.")
+        st.info("Pas assez de variables numériques pour la corrélation.")
 
-# petites distributions categos
-if cat_cols:
-    st.subheader("Répartition des variables catégorielles")
-    chosen_cat = st.selectbox("Variable catégorielle (< 30 modalités)", cat_cols, key="cat")
-    bar = (
-        alt.Chart(clean_df)
-        .mark_bar()
-        .encode(
-            y=alt.Y(chosen_cat, sort="-x"),
-            x=alt.X("count()", title="Effectif"),
-            tooltip=["count()"],
+with st.expander("📊 Répartition des variables catégorielles"):
+    if cat_cols:
+        cat_choice = st.selectbox("Variable catégorielle (<30 modalités)", cat_cols)
+        bar = (
+            alt.Chart(df)
+            .mark_bar()
+            .encode(
+                y=alt.Y(cat_choice, sort="-x"),
+                x="count()",
+                tooltip=["count()"],
+            )
+            .properties(height=400)
         )
-        .properties(height=400)
-    )
-    st.altair_chart(bar, use_container_width=True)
+        st.altair_chart(bar, use_container_width=True)
+    else:
+        st.info("Aucune variable catégorielle avec <30 modalités.")
 
-# -- téléchargement du csv nettoyé ------------------------------------------
+###########################
+# 04 — Export DataFrame nettoyé
+###########################
+
 @st.cache_data
-def get_csv_bytes(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False).encode("utf-8")
+def get_clean_csv_bytes(data: pd.DataFrame) -> bytes:
+    return data.to_csv(index=False).encode("utf-8")
 
 st.download_button(
-    "💾 Télécharger le CSV nettoyé",
-    get_csv_bytes(clean_df),
-    file_name="robots_clean.csv",
-    mime="text/csv",
+    "💾 Télécharger le CSV nettoyé", get_clean_csv_bytes(df), "robots_clean.csv", "text/csv"
 )
 
-st.caption("© 2025 - Généré avec Streamlit • Samir • Avanade")
+###############################################################################
+# FOOTER
+###############################################################################
+
+st.caption(
+    f"App Streamlit par {author}.  \u2022  "
+    f"[Voir le code]({repository_url}/blob/main/streamlit_app.py)  \u2022  "
+    "© 2025 Generali / Avanade"
+)
