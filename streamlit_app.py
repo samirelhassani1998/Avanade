@@ -87,9 +87,18 @@ def clean_dataframe(df_raw: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def profile_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Generate a minimal profile of the DataFrame.
+    Uses pandas.describe. We avoid the *datetime_is_numeric* kwarg because it
+    triggers a TypeError with older pandas versions on Streamlit Cloud.
+    """
+    try:
+        desc = df.describe(include="all", datetime_is_numeric=True)
+    except TypeError:
+        # Fallback for pandas < 1.5 that does not support *datetime_is_numeric*
+        desc = df.describe(include="all")
+
     out = (
-        df.describe(include="all", datetime_is_numeric=True)
-        .T
+        desc.T
         .assign(dtype=df.dtypes.astype(str))
         .reset_index()
         .rename(columns={"index": "column"})
