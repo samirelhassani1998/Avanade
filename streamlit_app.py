@@ -431,13 +431,33 @@ with tab_tech:
     tech_summary("vendor",  "Vendor")
 
 
-    # Sunburst zone → complexité
-    if {"zone_fonctionnelle", "complexite_cat", "volumetrie_an"}.issubset(df):
-        st.markdown("#### 🌞 Sunburst Zone → Complexité")
-        st.plotly_chart(
-            px.sunburst(df, path=["zone_fonctionnelle", "complexite_cat"], values="volumetrie_an", height=500),
-            use_container_width=True,
+# ----- SUNBURST Zone → Complexité ------------------------------------------
+st.markdown("#### 🌞 Sunburst Zone → Complexité")
+
+needed_cols = {"zone_fonctionnelle", "complexite_cat", "volumetrie_an"}
+if needed_cols.issubset(df.columns):
+    sb_df = (
+        df.dropna(subset=["zone_fonctionnelle", "complexite_cat", "volumetrie_an"])
+          .groupby(["zone_fonctionnelle", "complexite_cat"], as_index=False)["volumetrie_an"]
+          .sum()
+    )
+
+    n_zone       = sb_df["zone_fonctionnelle"].nunique()
+    n_complexite = sb_df["complexite_cat"].nunique()
+
+    if n_zone >= 2 and n_complexite >= 2 and not sb_df.empty:
+        fig = px.sunburst(
+            sb_df,
+            path=["zone_fonctionnelle", "complexite_cat"],
+            values="volumetrie_an",
+            height=500,
         )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Données insuffisantes pour construire un sunburst (au moins 2 zones et 2 complexités nécessaires).")
+else:
+    st.info("Colonnes nécessaires au sunburst manquantes.")
+
 
 # ═══ 11. Données ═══
 with tab_data:
