@@ -1,6 +1,53 @@
-import streamlit as st
+# ───────────── FONCTIONS UTILITAIRES MINIMALES ─────────────
+import csv, io, unicodedata, re, warnings
 import pandas as pd
 import numpy as np
+import streamlit as st
+
+def slugify(txt: str) -> str:
+    txt = unicodedata.normalize("NFKD", str(txt)).encode("ascii","ignore").decode()
+    return re.sub(r"_+","_", re.sub(r"[^0-9a-z]+","_", txt.lower())).strip("_")
+
+def read_csv_robust(buf) -> pd.DataFrame:
+    raw = buf.read()
+    sample = raw[:2048].decode("utf-8", "replace")
+    try:  sep = csv.Sniffer().sniff(sample, [",", ";", "\t"]).delimiter
+    except csv.Error: sep = ","
+    buf.seek(0)
+    return pd.read_csv(io.BytesIO(raw), sep=sep, dtype=str, keep_default_na=False)
+
+def promote_header(df: pd.DataFrame) -> pd.DataFrame:
+    if any(c.lower().startswith("unnamed") for c in df.columns):
+        first = df.iloc[0].tolist()
+        if len(set(first)) == len(first):
+            df = df.iloc[1:].reset_index(drop=True); df.columns = first
+    return df
+
+def to_num(s: pd.Series, pct=False):
+    s = (s.astype(str)
+           .str.replace("%", "", regex=False)
+           .str.replace(",", "", regex=False)
+           .str.replace(" ", "", regex=False)   # espace insécable
+           .str.replace(" ", "", regex=False))
+    n = pd.to_numeric(s, errors="coerce")
+    return n/100 if pct else n
+
+def clean(df0: pd.DataFrame) -> pd.DataFrame:
+    df = promote_header(df0); df.dropna(how="all", inplace=True)
+    df.columns = [slugify(c) or f"col_{i}" for i, c in enumerate(df.columns)]
+    for col, pct in {"volumetrie_an": False, "gains_etp": False, "reussite": True}.items():
+        if col in df.columns: df[col] = to_num(df[col], pct)
+    return df
+# -----------------------------------------------------------
+
+st.sidebar.header("📂 Import")
+upl = st.sidebar.file_uploader("CSV UTF-8", ["csv"])
+if upl is None:
+    st.sidebar.info("➡️ Déposez un fichier pour commencer."); st.stop()
+
+df = clean(read_csv_robust(upl))
+df_original = df.copy()          # <-- ta ligne 27 redeviendra valide
+
 
 # Bibliothèques pour les visualisations avancées
 import plotly.express as px
