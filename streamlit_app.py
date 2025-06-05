@@ -222,4 +222,46 @@ with a2.expander("🏅 Top 10 par volumétrie annuelle"):
             alt.Chart(top10)
             .mark_bar()
             .encode(
-                y=alt.Y("nom", sort="
+                y=alt.Y("nom", sort="-x"),
+                x="volumetrie_an:Q",
+                tooltip=["volumetrie_an"],
+            ).properties(height=400)
+        )
+        st.altair_chart(chart, use_container_width=True)
+    else:
+        st.info("Colonnes nom/volumetrie_an manquantes.")
+
+## Répartition catégorielle
+with st.expander("📂 Répartition d'une variable catégorielle (<=30 modalités)"):
+    if cat_cols:
+        cat_var = st.selectbox("Choisir la catégorie", cat_cols)
+        bar = (
+            alt.Chart(df)
+            .mark_bar()
+            .encode(
+                y=alt.Y(cat_var, sort="-x"),
+                x="count()",
+                tooltip=["count()"],
+            ).properties(height=400)
+        )
+        st.altair_chart(bar, use_container_width=True)
+    else:
+        st.info("Aucune variable catégorielle courte.")
+
+###############################################################################
+# EXPORT DU CSV NETTOYÉ
+###############################################################################
+
+@st.cache_data
+def to_csv_bytes(d: pd.DataFrame) -> bytes:
+    return d.to_csv(index=False).encode("utf-8")
+
+st.download_button("💾 Télécharger le CSV nettoyé", to_csv_bytes(df), "robots_clean.csv", "text/csv")
+
+###############################################################################
+# FOOTER
+###############################################################################
+
+st.caption(
+    f"Réalisé par {author} · [Code]({repo_url}/blob/main/streamlit_app.py) · 2025 Generali / Avanade"
+)
