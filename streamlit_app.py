@@ -201,6 +201,25 @@ with tab_over:
             use_container_width=True,
             hide_index=True,
         )
+st.markdown("#### 🔵 Bubble Zones")
+if {"zone_fonctionnelle","volumetrie_an","reussite"}.issubset(df):
+    agg = (df.groupby("zone_fonctionnelle")
+             .agg(robots=("nom","count"),
+                  volumetrie=("volumetrie_an","sum"),
+                  reussite_moy=("reussite","mean"))
+             .reset_index())
+    fig = px.scatter(agg,
+        x="volumetrie", y="reussite_moy", size="robots", text="zone_fonctionnelle",
+        labels={"volumetrie":"Volumétrie","reussite_moy":"% Réussite"},
+        height=500)
+    fig.update_traces(textposition='top center')
+    st.plotly_chart(fig, use_container_width=True)
+st.markdown("#### 🌳 Treemap volumétrie par zone")
+st.plotly_chart(
+    px.treemap(agg, path=["zone_fonctionnelle"], values="volumetrie",
+               color="reussite_moy", color_continuous_scale="RdYlGn",
+               hover_data={"robots":True, "reussite_moy":":.1%"}),
+    use_container_width=True)
 
 # ═══ 2. Distributions ═══
 with tab_dist:
@@ -390,34 +409,27 @@ with tab_tech:
     st.header("🛠️ Tech-Stack")
 
 # ── helper sûr pour bar-charts Tech ────────────────────────────
-def bar_if_exists(col: str, label: str):
-    """Affiche un bar-chart Plotly si la colonne existe et contient des valeurs."""
+def tech_summary(col: str, label: str):
+    """Affiche un graphique ou un compteur, selon la richesse de la colonne."""
     if col not in df or df[col].dropna().empty:
-        st.info(f"Aucune donnée « {label} » après filtres.")
+        st.info(f"Aucune donnée « {label} » après filtres."); return
+
+    vc = df[col].dropna().value_counts()
+    if len(vc) <= 1:
+        st.metric(f"{label} unique", vc.index[0] if not vc.empty else "—")
         return
 
-    tmp = (
-        df[col].dropna()                 # garde uniquement valeurs réelles
-              .value_counts()
-              .rename_axis(label)        # l’index devient une vraie colonne
-              .reset_index(name="Robots")
-    )
-    if tmp.empty or {"Robots", label}.difference(tmp.columns):
-        st.info(f"Aucune donnée « {label} » après filtres.")
-        return
-
-    fig = px.bar(
-        tmp,
-        x=label,
-        y="Robots",
-        title=f"Robots par {label.lower()}",
-        height=400,
-    )
+    tmp = vc.reset_index().rename(columns={"index": label, col: "Robots"})
+    fig = px.bar(tmp, x=label, y="Robots",
+                 title=f"Robots par {label.lower()}", height=400)
     st.plotly_chart(fig, use_container_width=True)
 
+# ----- Dans l’onglet 🛠️ Tech-Stack -------
+with tab_tech:
+    st.header("🛠️ Tech-Stack")
+    tech_summary("techno",  "Technologie")
+    tech_summary("vendor",  "Vendor")
 
-    bar_if_exists("techno", "Technologie")
-    bar_if_exists("vendor", "Vendor")
 
     # Sunburst zone → complexité
     if {"zone_fonctionnelle", "complexite_cat", "volumetrie_an"}.issubset(df):
