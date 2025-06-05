@@ -390,22 +390,29 @@ with tab_tech:
     st.header("🛠️ Tech-Stack")
 
     def bar_if_exists(col: str, label: str):
-        if col in df and df[col].notna().any():
-            tmp = (
-                df[col]
-                .value_counts()
-                .reset_index()
-                .rename(columns={"index": label, col: "Robots"})
-            )
-            if not tmp.empty:
-                st.plotly_chart(
-                    px.bar(tmp, x=label, y="Robots", title=f"Robots par {label.lower()}"),
-                    use_container_width=True,
-                )
-            else:
-                st.info(f"Aucune donnée {label.lower()} après filtres.")
-        else:
-            st.info(f"Colonne « {col} » absente ou vide.")
+    """Affiche un bar-chart Plotly si la colonne existe et contient des valeurs."""
+    if col not in df or df[col].dropna().empty:
+        st.info(f"Aucune donnée « {label} » après filtres.")
+        return
+
+    tmp = (
+        df[col].dropna()                 # garde uniquement valeurs réelles
+              .value_counts()
+              .rename_axis(label)        # l’index devient une vraie colonne
+              .reset_index(name="Robots")
+    )
+    if tmp.empty or {"Robots", label}.difference(tmp.columns):
+        st.info(f"Aucune donnée « {label} » après filtres.")
+        return
+
+    fig = px.bar(
+        tmp,
+        x=label,
+        y="Robots",
+        title=f"Robots par {label.lower()}",
+        height=400,
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
     bar_if_exists("techno", "Technologie")
     bar_if_exists("vendor", "Vendor")
