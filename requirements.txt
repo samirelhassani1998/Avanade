@@ -4,3 +4,4 @@ numpy>=1.25
 altair>=5.3
 pyarrow>=16.0
 vega_datasets>=0.9
+scikit-learn>=1.3
