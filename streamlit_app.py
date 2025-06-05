@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Streamlit – Inventaire RPA Generali  (v3.6 • 2025-06-05)
+Streamlit – Inventaire RPA Generali  (v3.7 • 2025-06-05)
 Auteur : Samir El Hassani – Avanade
 """
 
@@ -11,20 +11,22 @@ import altair as alt, plotly.express as px, plotly.graph_objects as go
 import streamlit as st
 from sklearn.cluster import KMeans; from sklearn.preprocessing import StandardScaler
 
-# ── CONFIG ────────────────────────────────────────────────────────────────
+# ── CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config("Inventaire RPA Generali", "🤖", "wide")
 pd.options.display.float_format = "{:,.2f}".format
 alt.data_transformers.disable_max_rows()
 
-# ── UTILS ─────────────────────────────────────────────────────────────────
+# ── UTILS ────────────────────────────────────────────────────────────────
 def slugify(t:str)->str:
     t=unicodedata.normalize("NFKD",str(t)).encode("ascii","ignore").decode()
     return re.sub(r"_+","_",re.sub(r"[^0-9a-z]+","_",t.lower())).strip("_")
 
 def read_any(buf)->pd.DataFrame:
     ext=pathlib.Path(buf.name).suffix.lower()
-    if ext in (".xls",".xlsx",".xlsm"): return pd.read_excel(buf,0,dtype=str,keep_default_na=False)
-    buf.seek(0); return pd.read_csv(buf,sep=None,engine="python",dtype=str,keep_default_na=False)
+    if ext in (".xls",".xlsx",".xlsm"):
+        return pd.read_excel(buf,0,dtype=str,keep_default_na=False)
+    buf.seek(0)
+    return pd.read_csv(buf,sep=None,engine="python",dtype=str,keep_default_na=False)
 
 def promote_header(df:pd.DataFrame)->pd.DataFrame:
     for i in range(min(10,len(df))):
@@ -35,40 +37,52 @@ def promote_header(df:pd.DataFrame)->pd.DataFrame:
 
 def to_num(s:pd.Series,pct=False):
     s=(s.astype(str).str.replace("%","").str.replace(",","").str.replace(" ","").str.strip())
-    n=pd.to_numeric(s,errors="coerce"); return n/100 if pct else n
+    n=pd.to_numeric(s,errors="coerce")
+    return n/100 if pct else n
 
 def clean(raw:pd.DataFrame)->pd.DataFrame:
     df=promote_header(raw); df.dropna(axis=1,how="all",inplace=True)
     df.columns=[slugify(c) or f"col_{i}" for i,c in enumerate(df.columns)]
     for base,pct in {"volumetrie_an":False,"gains_etp":False,"reussite":True}.items():
         col=next((c for c in df.columns if c.startswith(base)),None)
-        if col: df.rename(columns={col:base},inplace=True); df[base]=to_num(df[base],pct)
-    if "synch_asynch" in df: df["synch_mode"]=df["synch_asynch"].str.lower().str.strip()
+        if col:
+            df.rename(columns={col:base},inplace=True)
+            df[base]=to_num(df[base],pct)
+    if "synch_asynch" in df:
+        df["synch_mode"]=df["synch_asynch"].str.lower().str.strip()
     if "complexite_s_m_l" in df:
         df["complexite_cat"]=df["complexite_s_m_l"].str.upper().str[0].map({"S":"Small","M":"Medium","L":"Large"})
     return df
 
 @st.cache_data(show_spinner=False)
-def profile(df): d=df.describe(include="all"); tot=len(df); p=(d.T.assign(dtype=df.dtypes.astype(str)).reset_index()
-                 .rename(columns={"index":"col"})); p["missing"]=tot-p["count"].fillna(0); p["missing_pct"]=(p["missing"]/tot*100).round(1); return p
+def profile(df:pd.DataFrame):
+    d=df.describe(include="all"); tot=len(df)
+    p=(d.T.assign(dtype=df.dtypes.astype(str)).reset_index()
+         .rename(columns={"index":"col"}))
+    p["missing"]=tot-p["count"].fillna(0)
+    p["missing_pct"]=(p["missing"]/tot*100).round(1)
+    return p
 
 @st.cache_data(show_spinner=False)
 def corr_with_p(df):
     num=df.select_dtypes(np.number); out=[]
     for a,b in itertools.combinations(num,2):
         v=num[[a,b]].dropna()
-        if len(v)>2: r,p=stats.pearsonr(v[a],v[b]); out.append({"var_x":a,"var_y":b,"corr":r,"pval":p})
+        if len(v)>2:
+            r,p=stats.pearsonr(v[a],v[b])
+            out.append({"var_x":a,"var_y":b,"corr":r,"pval":p})
     return pd.DataFrame(out)
 
-# ── IMPORT ───────────────────────────────────────────────────────────────
+# ── IMPORT ──────────────────────────────────────────────────────────────
 st.sidebar.header("📂 Import")
 file=st.sidebar.file_uploader("Feuille 1 Excel / CSV",["csv","xls","xlsx","xlsm"])
-if not file: st.sidebar.info("➡️ Déposez un fichier"); st.stop()
+if not file:
+    st.sidebar.info("➡️ Déposez un fichier"); st.stop()
 
 df=clean(read_any(file))
 if st.sidebar.checkbox("Afficher colonnes"): st.sidebar.write(df.columns.tolist())
 
-# ── FILTRES ──────────────────────────────────────────────────────────────
+# ── FILTRES ─────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 🎛️ Filtres")
     c_map={"zone_fonctionnelle":"Zone","departement":"Département",
@@ -78,25 +92,29 @@ with st.sidebar:
             vals=sorted(df[c].dropna().unique())
             df=df[df[c].isin(st.multiselect(l,vals,vals))]
     if "volumetrie_an" in df:
-        v=df["volumetrie_an"].dropna(); rng=st.slider("Volumétrie/an",float(v.min()),float(v.max()),(float(v.min()),float(v.max())))
+        v=df["volumetrie_an"].dropna()
+        rng=st.slider("Volumétrie/an",float(v.min()),float(v.max()),
+                      (float(v.min()),float(v.max())))
         df=df[df["volumetrie_an"].between(*rng)]
     if "reussite" in df:
-        pct=st.slider("% réussite",0.0,1.0,(0.0,1.0)); df=df[df["reussite"].between(*pct)]
+        pct=st.slider("% réussite",0.0,1.0,(0.0,1.0))
+        df=df[df["reussite"].between(*pct)]
 
-# ── KPI ──────────────────────────────────────────────────────────────────
+# ── KPI ─────────────────────────────────────────────────────────────────
 st.success(f"{len(df):,} lignes – {df.shape[1]} colonnes")
 k1,k2,k3,k4,k5=st.columns(5)
 k1.metric("Robots",f"{len(df):,}")
 if "volumetrie_an" in df: k2.metric("Volumétrie",f"{df['volumetrie_an'].sum():,.0f}")
 if "reussite" in df:
     k3.metric("Médiane %",f"{df['reussite'].median()*100:,.1f}%")
-    k4.metric("<60 %",int((df['reussite']<.6).sum()))
+    k4.metric("< 60 %",int((df["reussite"]<.6).sum()))
 if "gains_etp" in df: k5.metric("Gains ETP",f"{df['gains_etp'].sum():,.1f}")
 
-# ── TABS ────────────────────────────────────────────────────────────────
+# ── TABS ───────────────────────────────────────────────────────────────
 tabs=st.tabs(["Vue générale","Distributions","Relations","Performance","Heat-Zones",
               "Clustering","Complexité/Mode","Tech-Stack","Données"])
-(tab_over,tab_dist,tab_rel,tab_perf,tab_heat,tab_clu,tab_comp,tab_tech,tab_data)=tabs
+(tab_over,tab_dist,tab_rel,tab_perf,tab_heat,
+ tab_clu,tab_comp,tab_tech,tab_data)=tabs
 
 # 1. Vue générale
 with tab_over:
@@ -192,41 +210,41 @@ with tab_comp:
     if "synch_mode" in df and df["synch_mode"].notna().any():
         st.plotly_chart(px.pie(df,names="synch_mode",hole=.45),use_container_width=True)
 
-# ═════ 8. Tech-Stack
+# ═════ 8. Tech-Stack  (garde anti-DF vide 100 %)
 with tab_tech:
     st.header("🛠️ Tech-Stack")
 
-    # ----- TECHNO -----
+    # — TECHNO —
     if "techno" in df and df["techno"].notna().any():
-        tech = (df["techno"]
-                  .value_counts()
-                  .reset_index(drop=False)
-                  .rename(columns={"index": "Technologie", "techno": "Robots"}))
-        if not tech.empty:
+        tech=(df["techno"].dropna()
+                .value_counts()
+                .rename_axis("Technologie")
+                .reset_index(name="Robots"))
+        if len(tech):
             st.plotly_chart(
-                px.bar(tech, x="Technologie", y="Robots",
-                       title="Nombre de robots par technologie"),
+                px.bar(tech,x="Technologie",y="Robots",
+                       title="Robots par technologie"),
                 use_container_width=True)
         else:
-            st.info("Aucune donnée technologie après filtres.")
+            st.info("Aucune ligne pour ‘techno’ après filtres.")
     else:
-        st.info("Colonne 'techno' absente ou vide.")
+        st.info("Colonne ‘techno’ absente ou vide.")
 
-    # ----- VENDOR -----
+    # — VENDOR —
     if "vendor" in df and df["vendor"].notna().any():
-        vend = (df["vendor"]
-                  .value_counts()
-                  .reset_index(drop=False)
-                  .rename(columns={"index": "Vendor", "vendor": "Robots"}))
-        if not vend.empty:
+        vend=(df["vendor"].dropna()
+                .value_counts()
+                .rename_axis("Vendor")
+                .reset_index(name="Robots"))
+        if len(vend):
             st.plotly_chart(
-                px.bar(vend, x="Vendor", y="Robots",
-                       title="Nombre de robots par vendor"),
+                px.bar(vend,x="Vendor",y="Robots",
+                       title="Robots par vendor"),
                 use_container_width=True)
         else:
-            st.info("Aucune donnée vendor après filtres.")
+            st.info("Aucune ligne pour ‘vendor’ après filtres.")
     else:
-        st.info("Colonne 'vendor' absente ou vide.")
+        st.info("Colonne ‘vendor’ absente ou vide.")
 
 # 9. Données
 with tab_data:
@@ -235,5 +253,5 @@ with tab_data:
     st.subheader("Table filtrée")
     st.dataframe(df,use_container_width=True)
 
-# ── FOOTER ───────────────────────────────────────────────────────────────
-st.caption(f"© 2025 Generali / Avanade – Samir El Hassani")
+# ── FOOTER ──────────────────────────────────────────────────────────────
+st.caption("© 2025 Generali / Avanade – Samir El Hassani")
