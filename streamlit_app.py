@@ -203,51 +203,66 @@ with tab_perf:
         else: st.info("Pas assez de valeurs")
     else: st.info("Aucune numérique")
 
-# ═══ 5. Heat-Zones – Heatmap Zones × Metrics (FIXED) ═══
+# ═══ 5. Heat-Zones – Heatmap Zone × Classe de % réussite  ═══
 with tab_heat:
-    st.subheader("🌡️ Heat-map Zones × Métriques")
-    needed = {"zone_fonctionnelle", "volumetrie_an", "reussite", "gains_etp"}
+    st.subheader("🌡️ Zones fonctionnelles vs classes de % réussite")
+
+    needed = {"zone_fonctionnelle", "reussite", "volumetrie_an"}
     if needed.issubset(df.columns) and df["zone_fonctionnelle"].notna().any():
-        # Sélection des métriques à afficher
-        metric_map = {"Volumétrie annuelle": "volumetrie_an",
-                      "% Réussite moyenne": "reussite",
-                      "Gains ETP cumulés": "gains_etp"}
-        default_sel = list(metric_map.keys())[:2]          # Volumétrie + % réussite
-        sel_metrics = st.multiselect("Choisissez les métriques à comparer",
-                                     list(metric_map.keys()), default=default_sel)
-        if not sel_metrics:
-            st.warning("Sélectionnez au moins une métrique.")
-        else:
-            # Agrégation zone  ×  métriques
-            agg = (df.groupby("zone_fonctionnelle")
-                     .agg(volumetrie_an=("volumetrie_an", "sum"),
-                          reussite=("reussite", "mean"),
-                          gains_etp=("gains_etp", "sum"))
-                     .reset_index())
-            # Passage en long format
-            heat = agg.melt(id_vars="zone_fonctionnelle",
-                            value_vars=[metric_map[m] for m in sel_metrics],
-                            var_name="metric", value_name="value").dropna()
 
-            # Choix palette : log si volumetrie, sinon linéaire
-            log_palette = any(m == "volumetrie_an" for m in heat["metric"].unique())
-            color_scale = alt.Scale(scheme="blues",
-                                    type="log" if log_palette else "linear")
+        # 1) Construction de la classe de % réussite
+        bins   = [0.0, 0.60, 0.80, 1.01]              # 1.01 pour inclure 1.00
+        labels = ["< 60 %", "60 – 80 %", "≥ 80 %"]
+        df["classe_reussite"] = pd.cut(
+            df["reussite"], bins=bins, labels=labels, include_lowest=True
+        )
 
-            base = alt.Chart(heat).encode(
-                x=alt.X("metric:N", title="Métrique"),
-                y=alt.Y("zone_fonctionnelle:N", title="Zone fonctionnelle",
-                        sort="-x"),
-                color=alt.Color("value:Q", title="Valeur", scale=color_scale),
-                tooltip=["zone_fonctionnelle", "metric", alt.Tooltip("value:Q",
-                          format=",.2f")]
+        # 2) Choix de la métrique à agréger
+        mode = st.radio(
+            "Couleur basée sur …",
+            ["Nombre de robots", "Volumétrie annuelle totale"],
+            horizontal=True,
+        )
+
+        if mode == "Nombre de robots":
+            pivot = (
+                df.groupby(["zone_fonctionnelle", "classe_reussite"])
+                  .size()
+                  .reset_index(name="valeur")
             )
+            titre_couleur = "Robots"
+        else:
+            pivot = (
+                df.groupby(["zone_fonctionnelle", "classe_reussite"])["volumetrie_an"]
+                  .sum()
+                  .reset_index(name="valeur")
+            )
+            titre_couleur = "Volumétrie"
 
-            st.altair_chart(base.mark_rect().properties(
-                height=max(300, 20 * heat["zone_fonctionnelle"].nunique())
-            ), use_container_width=True)
+        # 3) Heat-map Altair
+        chart = (
+            alt.Chart(pivot)
+            .mark_rect()
+            .encode(
+                x=alt.X("classe_reussite:N", title="Classe de % réussite"),
+                y=alt.Y("zone_fonctionnelle:N", sort="-x", title="Zone fonctionnelle"),
+                color=alt.Color("valeur:Q", scale=alt.Scale(scheme="blues"), title=titre_couleur),
+                tooltip=[
+                    alt.Tooltip("zone_fonctionnelle:N", title="Zone"),
+                    alt.Tooltip("classe_reussite:N",  title="% réussite"),
+                    alt.Tooltip("valeur:Q", format=",.0f", title=titre_couleur),
+                ],
+            )
+            .properties(
+                height=max(300, 22 * pivot["zone_fonctionnelle"].nunique())
+            )
+        )
+
+        st.altair_chart(chart, use_container_width=True)
+
     else:
-        st.info("Colonnes requises manquantes ou vides.")
+        st.info("Colonnes manquantes ou vides pour construire la heat-map.")
+
 
 
 # ═══ 6. Clustering – K-means (inchangé sauf visu clusters) ═══
