@@ -203,22 +203,52 @@ with tab_perf:
         else: st.info("Pas assez de valeurs")
     else: st.info("Aucune numérique")
 
-# ═══ 5. Heat-Zones – Heatmap catégories 🆕 ═══
+# ═══ 5. Heat-Zones – Heatmap Zones × Metrics (FIXED) ═══
 with tab_heat:
-    st.subheader("🌡️ Heatmap Zones × Metric")
-    if "zone_fonctionnelle" in df and {"volumetrie_an","reussite","gains_etp"}.intersection(df.columns):
-        metric = st.selectbox("Métrique", ["volumetrie_an","reussite","gains_etp"])
-        pivot = (df.groupby("zone_fonctionnelle")[metric]
-                   .mean() if metric=="reussite" else df.groupby("zone_fonctionnelle")[metric].sum())
-        pivot = pivot.reset_index().rename(columns={metric:"value"})
-        st.altair_chart(
-            alt.Chart(pivot).mark_rect().encode(
-                y=alt.Y("zone_fonctionnelle:N", sort="-x"),
-                color=alt.Color("value:Q", scale=alt.Scale(scheme="blues")),
-                tooltip=["zone_fonctionnelle","value"])
-            .properties(height=max(300,15*len(pivot))),
-            use_container_width=True)
-    else: st.info("Colonnes manquantes")
+    st.subheader("🌡️ Heat-map Zones × Métriques")
+    needed = {"zone_fonctionnelle", "volumetrie_an", "reussite", "gains_etp"}
+    if needed.issubset(df.columns) and df["zone_fonctionnelle"].notna().any():
+        # Sélection des métriques à afficher
+        metric_map = {"Volumétrie annuelle": "volumetrie_an",
+                      "% Réussite moyenne": "reussite",
+                      "Gains ETP cumulés": "gains_etp"}
+        default_sel = list(metric_map.keys())[:2]          # Volumétrie + % réussite
+        sel_metrics = st.multiselect("Choisissez les métriques à comparer",
+                                     list(metric_map.keys()), default=default_sel)
+        if not sel_metrics:
+            st.warning("Sélectionnez au moins une métrique.")
+        else:
+            # Agrégation zone  ×  métriques
+            agg = (df.groupby("zone_fonctionnelle")
+                     .agg(volumetrie_an=("volumetrie_an", "sum"),
+                          reussite=("reussite", "mean"),
+                          gains_etp=("gains_etp", "sum"))
+                     .reset_index())
+            # Passage en long format
+            heat = agg.melt(id_vars="zone_fonctionnelle",
+                            value_vars=[metric_map[m] for m in sel_metrics],
+                            var_name="metric", value_name="value").dropna()
+
+            # Choix palette : log si volumetrie, sinon linéaire
+            log_palette = any(m == "volumetrie_an" for m in heat["metric"].unique())
+            color_scale = alt.Scale(scheme="blues",
+                                    type="log" if log_palette else "linear")
+
+            base = alt.Chart(heat).encode(
+                x=alt.X("metric:N", title="Métrique"),
+                y=alt.Y("zone_fonctionnelle:N", title="Zone fonctionnelle",
+                        sort="-x"),
+                color=alt.Color("value:Q", title="Valeur", scale=color_scale),
+                tooltip=["zone_fonctionnelle", "metric", alt.Tooltip("value:Q",
+                          format=",.2f")]
+            )
+
+            st.altair_chart(base.mark_rect().properties(
+                height=max(300, 20 * heat["zone_fonctionnelle"].nunique())
+            ), use_container_width=True)
+    else:
+        st.info("Colonnes requises manquantes ou vides.")
+
 
 # ═══ 6. Clustering – K-means (inchangé sauf visu clusters) ═══
 with tab_clu:
