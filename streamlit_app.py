@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Streamlit – Inventaire RPA Generali (v2.1)
-Auteur : Samir El Hassani – Avanade · 2025-06-05
+Streamlit – Inventaire RPA Generali (v2.2)
+Inclut :
+  • upload robuste + nettoyage + filtres dynamiques
+  • KPIs, Pareto, histogrammes, corrélations (p-value), clustering K-means
+  • export CSV nettoyé / filtré
+Auteur : Samir El Hassani · Avanade – 2025-06-05
 """
 
 from __future__ import annotations
@@ -60,7 +64,7 @@ def read_csv_robust(buf) -> pd.DataFrame:
         sep = csv.Sniffer().sniff(sample, [",", ";", "\t"]).delimiter
     except csv.Error:
         sep = ","
-    buf.seek(0)                                 # IMPORTANT : repositionner le curseur
+    buf.seek(0)
     return pd.read_csv(io.BytesIO(raw), sep=sep, dtype=str, keep_default_na=False)
 
 
@@ -68,7 +72,7 @@ def promote_header(df: pd.DataFrame) -> pd.DataFrame:
     """Si la première ligne contient les vrais noms de colonnes → la promouvoir."""
     if any(c.lower().startswith("unnamed") for c in df.columns):
         first = df.iloc[0].tolist()
-        if len(set(first)) == len(first):       # pas de doublon = vraie en-tête
+        if len(set(first)) == len(first):
             df = df.iloc[1:].reset_index(drop=True)
             df.columns = first
     return df
@@ -79,7 +83,7 @@ def to_num(s: pd.Series, pct: bool = False) -> pd.Series:
         s.astype(str)
         .str.replace("%", "", regex=False)
         .str.replace(",", "", regex=False)
-        .str.replace(" ", "", regex=False)      # gère les espaces insécables
+        .str.replace(" ", "", regex=False)
     )
     n = pd.to_numeric(s, errors="coerce")
     return n / 100 if pct else n
@@ -97,7 +101,7 @@ def clean(df0: pd.DataFrame) -> pd.DataFrame:
     return df
 
 ###############################################################################
-# Profil + corrélation avec p-value
+# Profil + corrélation robuste
 ###############################################################################
 @st.cache_data(show_spinner=False)
 def profile(df: pd.DataFrame) -> pd.DataFrame:
@@ -118,13 +122,30 @@ def profile(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def corr_with_p(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcule r de Pearson + p-value pour chaque couple de variables numériques.
+    Ignore les paires avec < 3 valeurs valides ou variance nulle.
+    """
     num = df.select_dtypes(np.number)
-    combos = list(itertools.combinations(num.columns, 2))
-    data = []
-    for a, b in combos:
-        r, p = stats.pearsonr(num[a].dropna(), num[b].dropna())
-        data.append({"var_x": a, "var_y": b, "corr": r, "pval": p})
-    return pd.DataFrame(data)
+    cols = list(num.columns)
+    out  = []
+
+    for i in range(len(cols)):
+        for j in range(i + 1, len(cols)):
+            a, b = cols[i], cols[j]
+
+            valid = num[[a, b]].dropna()        # lignes où A ET B existent
+            if len(valid) < 3:
+                continue                        # pas assez de points
+
+            x, y = valid[a].values, valid[b].values
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=stats.ConstantInputWarning)
+                r, p = stats.pearsonr(x, y)
+
+            out.append({"var_x": a, "var_y": b, "corr": r, "pval": p})
+
+    return pd.DataFrame(out)
 
 ###############################################################################
 # SIDEBAR : upload + filtres
@@ -139,7 +160,7 @@ if upload is None:
 df_raw = read_csv_robust(upload)
 df     = clean(df_raw)
 
-# ---- Filtres dynamiques
+# ---- Filtres
 with st.sidebar:
     st.markdown("### 🎛️ Filtres")
     if "zone_fonctionnelle" in df.columns:
@@ -184,7 +205,7 @@ tab_over, tab_dist, tab_rel, tab_clust, tab_data = st.tabs(
     ["Vue d’ensemble", "Distributions", "Relations", "Clustering", "Données"]
 )
 
-# ───────────────── Vue d’ensemble ────────────────────────────────────────────
+# ─────────────── Vue d’ensemble ─────────────────────────────────────────────
 with tab_over:
     st.subheader("📈 Pareto 80/20 volumétrie")
     if {"volumetrie_an", "nom"}.issubset(df.columns):
@@ -216,7 +237,7 @@ with tab_over:
         )
         st.dataframe(agg, hide_index=True, use_container_width=True)
 
-# ───────────────── Distributions ─────────────────────────────────────────────
+# ─────────────── Distributions ──────────────────────────────────────────────
 with tab_dist:
     st.subheader("📊 Histogramme & box-plot")
     numcols: List[str] = df.select_dtypes(np.number).columns.tolist()
@@ -238,7 +259,7 @@ with tab_dist:
     else:
         st.info("Aucune variable numérique.")
 
-# ───────────────── Relations ────────────────────────────────────────────────
+# ─────────────── Relations ──────────────────────────────────────────────────
 with tab_rel:
     st.subheader("🔗 Corrélations & scatter")
     num = df.select_dtypes(np.number).columns
@@ -276,7 +297,7 @@ with tab_rel:
     else:
         st.info("Pas assez de variables numériques.")
 
-# ───────────────── Clustering ────────────────────────────────────────────────
+# ─────────────── Clustering ─────────────────────────────────────────────────
 with tab_clust:
     st.subheader("🎯 Clustering K-means")
     num_clean = df.select_dtypes(np.number).dropna()
@@ -297,9 +318,9 @@ with tab_clust:
             )
             st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Pas assez de lignes ou de variables numériques pour clusteriser.")
+        st.info("Pas assez de données numériques pour clusteriser.")
 
-# ───────────────── Données ───────────────────────────────────────────────────
+# ─────────────── Données ────────────────────────────────────────────────────
 with tab_data:
     st.subheader("📑 Profil statistique")
     st.dataframe(profile(df), use_container_width=True)
@@ -321,6 +342,8 @@ with tab_data:
 ###############################################################################
 # Footer
 ###############################################################################
-st.caption(f"Réalisé par {AUTHOR} • "
-           f"[Code]({REPO}/blob/main/streamlit_app.py) • "
-           "© 2025 Generali / Avanade")
+st.caption(
+    f"Réalisé par {AUTHOR} • "
+    f"[Code]({REPO}/blob/main/streamlit_app.py) • "
+    "© 2025 Generali / Avanade"
+)
